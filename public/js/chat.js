@@ -1,192 +1,204 @@
-// State
+// ── State ─────────────────────────────────────────────────────────────────────
 let token = localStorage.getItem('token');
 let currentUser = JSON.parse(localStorage.getItem('user') || 'null');
-let socket;
-let currentRoom = 'global';
-let currentDMUser = null;
-let allUsers = {};
-let unreadCounts = {};
-let typingTimers = {};
-let typingUsers = {};
-let isMyProfile = false;
+let socket, currentRoom = 'global', currentDMUser = null;
+let allUsers = {}, unreadCounts = {};
+let typingTimers = {}, typingUsers = {};
+let pendingAttachment = null; // { url, type, name }
+let lastMsgSenderId = null, lastMsgDate = null;
 
-if (!token || !currentUser) {
-  window.location.href = '/';
-}
+if (!token || !currentUser) { window.location.href = '/'; }
 
-// Fetch helpers
-async function apiFetch(path, opts = {}) {
+// ── API helpers ───────────────────────────────────────────────────────────────
+async function api(path, opts = {}) {
   const res = await fetch(path, {
     ...opts,
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', ...opts.headers }
   });
-  if (res.status === 401) { logout(); return; }
+  if (res.status === 401) { logout(); return null; }
+  return res.json();
+}
+async function apiForm(path, fd) {
+  const res = await fetch(path, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: fd });
   return res.json();
 }
 
-async function apiFetchForm(path, formData) {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}` },
-    body: formData
-  });
-  return res.json();
+// ── Last seen helper ──────────────────────────────────────────────────────────
+function formatLastSeen(ts) {
+  if (!ts) return 'давно';
+  const diff = Math.floor(Date.now() / 1000) - ts;
+  if (diff < 60)   return 'только что';
+  if (diff < 3600) return `${Math.floor(diff/60)} мин назад`;
+  if (diff < 86400)return `${Math.floor(diff/3600)} ч назад`;
+  if (diff < 604800)return `${Math.floor(diff/86400)} д назад`;
+  return new Date(ts*1000).toLocaleDateString('ru-RU', { day:'numeric', month:'short' });
+}
+function userSubline(u) {
+  if (u.status === 'online') return '● Онлайн';
+  return 'был ' + formatLastSeen(u.last_seen);
 }
 
-// Init
+// ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
-  // Update my info
-  const me = await apiFetch('/api/me');
-  if (me) {
-    currentUser = me;
-    localStorage.setItem('user', JSON.stringify(me));
-  }
+  const me = await api('/api/me');
+  if (me) { currentUser = me; localStorage.setItem('user', JSON.stringify(me)); }
   updateMySidebar();
-
-  // Load users
   await loadUsers();
-
-  // Connect socket
-  socket = io({ auth: { token } });
-  setupSocket();
-
-  // Load global messages
+  connectSocket();
   await loadGlobalMessages();
+  setupInput();
+}
 
-  // Input listeners
+function setupInput() {
   const input = document.getElementById('msg-input');
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
   input.addEventListener('input', () => {
     autoResize(input);
     handleTyping();
     const len = input.value.length;
-    const counter = document.getElementById('char-count');
-    counter.textContent = len > 1800 ? `${len}/2000` : '';
+    document.getElementById('char-count').textContent = len > 1700 ? `${len}/2000` : '';
   });
+
+  // Search
+  const searchInput = document.getElementById('search-input');
+  searchInput.addEventListener('input', () => {
+    const q = searchInput.value.trim();
+    document.getElementById('search-clear').classList.toggle('visible', q.length > 0);
+    filterUsers(q);
+  });
+}
+function clearSearch() {
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-clear').classList.remove('visible');
+  filterUsers('');
+}
+function filterUsers(q) {
+  const items = document.querySelectorAll('.user-item');
+  let visible = 0;
+  items.forEach(item => {
+    const name = item.querySelector('.u-name')?.textContent?.toLowerCase() || '';
+    const match = !q || name.includes(q.toLowerCase());
+    item.style.display = match ? '' : 'none';
+    if (match) visible++;
+  });
+  let noRes = document.getElementById('no-results');
+  if (!visible && q) {
+    if (!noRes) {
+      noRes = document.createElement('div');
+      noRes.id = 'no-results'; noRes.className = 'no-results';
+      noRes.textContent = 'Никого не найдено';
+      document.getElementById('users-list').appendChild(noRes);
+    }
+  } else if (noRes) noRes.remove();
 }
 
 function autoResize(el) {
   el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  el.style.height = Math.min(el.scrollHeight, 110) + 'px';
 }
 
+// ── Sidebar ────────────────────────────────────────────────────────────────────
 function updateMySidebar() {
   document.getElementById('my-nickname').textContent = currentUser.nickname;
-  document.getElementById('my-username').textContent = '@' + currentUser.username;
-  const avatarEl = document.getElementById('my-avatar');
-  const initEl = document.getElementById('my-avatar-initial');
-  if (currentUser.avatar) {
-    let img = avatarEl.querySelector('img');
-    if (!img) { img = document.createElement('img'); avatarEl.appendChild(img); }
-    img.src = currentUser.avatar;
-    img.style.display = 'block';
-    initEl.style.display = 'none';
+  const avEl = document.getElementById('my-avatar');
+  setAvatar(avEl, currentUser.avatar, currentUser.nickname);
+}
+
+function setAvatar(container, avatarUrl, nickname) {
+  const initial = nickname?.[0]?.toUpperCase() || '?';
+  if (avatarUrl) {
+    container.innerHTML = `<img src="${avatarUrl}" alt="">`;
   } else {
-    initEl.textContent = currentUser.nickname[0].toUpperCase();
-    initEl.style.display = 'block';
-    const img = avatarEl.querySelector('img');
-    if (img) img.style.display = 'none';
+    container.innerHTML = `<span>${initial}</span>`;
   }
 }
 
 async function loadUsers() {
-  const users = await apiFetch('/api/users');
+  const users = await api('/api/users');
   if (!users) return;
   allUsers = {};
-  users.forEach(u => { allUsers[u.id] = u; });
-  renderUsersList(users);
+  users.forEach(u => allUsers[u.id] = u);
+  renderUsers(users);
 }
 
-function renderUsersList(users) {
-  const container = document.getElementById('users-list');
-  container.innerHTML = '';
-  users.forEach(u => {
-    const div = document.createElement('div');
-    div.className = 'user-item' + (currentRoom === 'dm_' + u.id ? ' active-dm' : '');
-    div.dataset.userId = u.id;
-    div.onclick = () => openDM(u.id);
+function renderUsers(users) {
+  const list = document.getElementById('users-list');
+  list.innerHTML = '';
+  document.getElementById('users-count').textContent = `(${users.length})`;
 
-    const avatarHtml = u.avatar
+  users.forEach(u => {
+    const item = document.createElement('div');
+    item.className = 'user-item' + (currentRoom === 'dm_'+u.id ? ' active-dm' : '');
+    item.dataset.userId = u.id;
+    item.onclick = () => openDM(u.id);
+
+    const avHtml = u.avatar
       ? `<img src="${u.avatar}" alt="">`
       : `<span>${u.nickname[0].toUpperCase()}</span>`;
 
     const unread = unreadCounts[u.id] || 0;
-    const badgeHtml = unread > 0 ? `<span class="unread-badge">${unread > 9 ? '9+' : unread}</span>` : '';
+    const sub = userSubline(u);
 
-    div.innerHTML = `
-      <div class="user-avatar">
-        ${avatarHtml}
-        <span class="status-dot ${u.status === 'online' ? 'online' : 'offline'}"></span>
+    item.innerHTML = `
+      <div class="u-av">
+        <div class="av-inner">${avHtml}</div>
+        <span class="status-dot ${u.status==='online'?'online':'offline'}"></span>
       </div>
-      <span class="user-name">${escHtml(u.nickname)}</span>
-      ${badgeHtml}
+      <div class="u-info">
+        <div class="u-name">${escHtml(u.nickname)}</div>
+        <div class="u-sub">${escHtml(sub)}</div>
+      </div>
+      ${unread > 0 ? `<span class="unread-badge">${unread > 9 ? '9+' : unread}</span>` : ''}
     `;
-    container.appendChild(div);
+    list.appendChild(item);
   });
 }
 
-function updateUserStatus(userId, status) {
-  if (allUsers[userId]) allUsers[userId].status = status;
+function updateUserInList(userId, updates) {
+  if (allUsers[userId]) Object.assign(allUsers[userId], updates);
   const item = document.querySelector(`.user-item[data-user-id="${userId}"]`);
-  if (item) {
-    const dot = item.querySelector('.status-dot');
-    if (dot) {
-      dot.className = 'status-dot ' + (status === 'online' ? 'online' : 'offline');
-    }
+  if (!item) return;
+  const dot = item.querySelector('.status-dot');
+  if (dot && updates.status) {
+    dot.className = 'status-dot ' + (updates.status==='online' ? 'online' : 'offline');
   }
+  const sub = item.querySelector('.u-sub');
+  if (sub) sub.textContent = userSubline(allUsers[userId]);
 }
 
-// Socket setup
-function setupSocket() {
-  socket.on('connect', () => console.log('Connected'));
+// ── Socket ─────────────────────────────────────────────────────────────────────
+function connectSocket() {
+  socket = io({ auth: { token } });
 
-  socket.on('online_count', (count) => {
-    document.getElementById('online-count').textContent = count;
+  socket.on('online_count', n => document.getElementById('online-count').textContent = n);
+
+  socket.on('user_status', ({ userId, status, last_seen }) => {
+    updateUserInList(userId, { status, last_seen });
   });
 
-  socket.on('user_status', ({ userId, status }) => {
-    updateUserStatus(userId, status);
+  socket.on('global_message', msg => {
+    if (currentRoom === 'global') { appendMessage(msg); scrollBottom(); }
   });
 
-  socket.on('global_message', (msg) => {
-    if (currentRoom === 'global') {
-      appendMessage(msg, 'global');
-      scrollToBottom();
-    }
-  });
-
-  socket.on('dm_message', (msg) => {
+  socket.on('dm_message', msg => {
     const otherId = msg.sender_id === currentUser.id ? msg.toUserId : msg.sender_id;
-    const room = 'dm_' + otherId;
-    if (currentRoom === room) {
-      appendMessage(msg, 'dm');
-      scrollToBottom();
-    } else if (msg.sender_id !== currentUser.id) {
-      // Unread notification
-      unreadCounts[msg.sender_id] = (unreadCounts[msg.sender_id] || 0) + 1;
-      renderUsersList(Object.values(allUsers));
-      if (allUsers[msg.sender_id]) {
-        showToast(`💬 ${allUsers[msg.sender_id].nickname}: ${msg.content.substring(0, 50)}`, 'info');
-      }
+    if (currentRoom === 'dm_'+otherId) { appendMessage(msg); scrollBottom(); }
+    else if (msg.sender_id !== currentUser.id) {
+      unreadCounts[msg.sender_id] = (unreadCounts[msg.sender_id]||0) + 1;
+      renderUsers(Object.values(allUsers));
+      const u = allUsers[msg.sender_id];
+      if (u) showToast(`💬 ${u.nickname}: ${msg.content.substring(0,50)||'📷 фото'}`, 'info');
     }
   });
 
   socket.on('typing', ({ userId, nickname, room, isTyping }) => {
     if (userId === currentUser.id) return;
-    const relevantRoom = currentRoom === 'global' ? 'global' : currentRoom;
+    const relevantRoom = currentRoom === 'global' ? 'global' : [currentUser.id, currentDMUser].sort().join('_');
     const msgRoom = room === 'global' ? 'global' : room;
-    if (relevantRoom !== msgRoom && msgRoom !== [currentUser.id, userId].sort().join('_')) return;
-
-    if (isTyping) {
-      typingUsers[userId] = nickname;
-    } else {
-      delete typingUsers[userId];
-    }
+    if (relevantRoom !== msgRoom) return;
+    if (isTyping) typingUsers[userId] = nickname; else delete typingUsers[userId];
     updateTypingIndicator();
   });
 }
@@ -196,302 +208,307 @@ function handleTyping() {
   const room = currentRoom === 'global' ? 'global' : [currentUser.id, currentDMUser].sort().join('_');
   socket.emit('typing', { room, isTyping: true });
   clearTimeout(typingTimeout);
-  typingTimeout = setTimeout(() => {
-    socket.emit('typing', { room, isTyping: false });
-  }, 2000);
+  typingTimeout = setTimeout(() => socket.emit('typing', { room, isTyping: false }), 2000);
 }
-
 function updateTypingIndicator() {
   const el = document.getElementById('typing-indicator');
   const textEl = document.getElementById('typing-text');
   const names = Object.values(typingUsers);
-  if (names.length === 0) {
-    el.style.display = 'none';
-  } else {
-    el.style.display = 'flex';
-    if (names.length === 1) textEl.textContent = `${names[0]} печатает...`;
-    else textEl.textContent = `${names.slice(0, 2).join(', ')} печатают...`;
-  }
+  if (!names.length) { textEl.textContent = ''; return; }
+  textEl.textContent = names.length === 1 ? `${names[0]} печатает...` : `${names.slice(0,2).join(', ')} печатают...`;
 }
 
-// Messages rendering
+// ── Messages ──────────────────────────────────────────────────────────────────
 async function loadGlobalMessages() {
-  const msgs = await apiFetch('/api/messages/global');
-  clearMessages();
-  if (msgs?.length) {
-    msgs.forEach(m => appendMessage(m, 'global'));
-    scrollToBottom();
-  }
+  const msgs = await api('/api/messages/global');
+  clearMessages(); lastMsgSenderId = null; lastMsgDate = null;
+  msgs?.forEach(m => appendMessage(m));
+  if (msgs?.length) scrollBottom();
 }
-
 async function loadDMMessages(userId) {
-  const msgs = await apiFetch(`/api/messages/dm/${userId}`);
-  clearMessages();
-  if (msgs?.length) {
-    msgs.forEach(m => appendMessage(m, 'dm'));
-    scrollToBottom();
+  const msgs = await api(`/api/messages/dm/${userId}`);
+  clearMessages(); lastMsgSenderId = null; lastMsgDate = null;
+  msgs?.forEach(m => appendMessage(m));
+  if (msgs?.length) scrollBottom();
+}
+function clearMessages() {
+  document.getElementById('messages-area').innerHTML = '';
+  document.getElementById('welcome-banner')?.remove();
+  const wb = document.createElement('div');
+  if (currentRoom === 'global') {
+    wb.id = 'welcome-banner'; wb.className = 'welcome-banner';
+    wb.innerHTML = '<div class="welcome-icon">🌐</div><h2>Мировой чат</h2><p>Здесь собираются все.</p>';
+    document.getElementById('messages-area').appendChild(wb);
   }
 }
 
-function clearMessages() {
+function appendMessage(msg) {
   const area = document.getElementById('messages-area');
-  area.innerHTML = '';
-}
+  const wb = document.getElementById('welcome-banner');
+  if (wb) wb.remove();
 
-let lastMsgDate = null;
-
-function appendMessage(msg, type) {
-  const area = document.getElementById('messages-area');
   const isOwn = msg.sender_id === currentUser.id;
-
-  // Date separator
   const date = new Date(msg.created_at * 1000);
-  const dateStr = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+  const dateStr = date.toLocaleDateString('ru-RU', { day:'numeric', month:'long' });
+
   if (dateStr !== lastMsgDate) {
     lastMsgDate = dateStr;
+    lastMsgSenderId = null;
     const sep = document.createElement('div');
-    sep.className = 'system-msg';
-    sep.textContent = dateStr;
+    sep.className = 'date-sep';
+    sep.innerHTML = `<span>${dateStr}</span>`;
     area.appendChild(sep);
   }
 
+  const continued = lastMsgSenderId === msg.sender_id;
+  lastMsgSenderId = msg.sender_id;
+
+  const timeStr = date.toLocaleTimeString('ru-RU', { hour:'2-digit', minute:'2-digit' });
+  const avHtml = msg.avatar ? `<img src="${msg.avatar}" alt="">` : (msg.nickname?.[0]?.toUpperCase() || '?');
+
   const group = document.createElement('div');
-  group.className = `message-group${isOwn ? ' own' : ''}`;
+  group.className = `msg-group${isOwn?' own':''}${continued?' continued':''}`;
 
-  const avatarHtml = msg.avatar
-    ? `<img src="${msg.avatar}" alt="">`
-    : `<span>${msg.nickname[0].toUpperCase()}</span>`;
+  const metaHtml = !continued
+    ? `<div class="msg-meta">
+        ${!isOwn ? `<span class="msg-nick" onclick="viewUser('${msg.sender_id}')">${escHtml(msg.nickname)}</span>` : ''}
+        <span class="msg-time">${timeStr}</span>
+       </div>`
+    : '';
 
-  const timeStr = date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const bubbleHtml = msg.content
+    ? `<div class="msg-bubble">${escHtml(msg.content)}</div>`
+    : '';
+
+  const imgHtml = msg.attachment_url && msg.attachment_type === 'image'
+    ? `<img class="msg-image" src="${msg.attachment_url}" alt="фото" onclick="openLightbox('${msg.attachment_url}')" loading="lazy">`
+    : '';
 
   group.innerHTML = `
-    <div class="msg-avatar" onclick="viewUser('${msg.sender_id}')" title="${escHtml(msg.nickname)}">${avatarHtml}</div>
+    <div class="msg-av ${continued?'hidden':''}" onclick="viewUser('${msg.sender_id}')">${avHtml}</div>
     <div class="msg-body">
-      ${!isOwn ? `<div class="msg-meta">
-        <span class="msg-nick" onclick="viewUser('${msg.sender_id}')">${escHtml(msg.nickname)}</span>
-        <span class="msg-time">${timeStr}</span>
-      </div>` : `<div class="msg-meta" style="justify-content:flex-end">
-        <span class="msg-time">${timeStr}</span>
-      </div>`}
-      <div class="msg-bubble">${escHtml(msg.content)}</div>
+      ${metaHtml}
+      ${imgHtml}
+      ${bubbleHtml}
     </div>
   `;
   area.appendChild(group);
 }
 
-function scrollToBottom() {
+function scrollBottom() {
   const area = document.getElementById('messages-area');
   area.scrollTop = area.scrollHeight;
 }
 
-// Send message
-function sendMessage() {
+// ── Send ──────────────────────────────────────────────────────────────────────
+async function sendMessage() {
   const input = document.getElementById('msg-input');
   const content = input.value.trim();
-  if (!content) return;
+  if (!content && !pendingAttachment) return;
+
+  const payload = {
+    content,
+    attachment_url: pendingAttachment?.url || null,
+    attachment_type: pendingAttachment?.type || null
+  };
 
   if (currentRoom === 'global') {
-    socket.emit('global_message', { content });
+    socket.emit('global_message', payload);
   } else if (currentDMUser) {
-    socket.emit('dm_message', { toUserId: currentDMUser, content });
-    // Optimistic render
-    const me = currentUser;
+    // optimistic render
     const now = Math.floor(Date.now() / 1000);
-    appendMessage({ id: 'tmp_' + now, sender_id: me.id, content, nickname: me.nickname, username: me.username, avatar: me.avatar, created_at: now }, 'dm');
-    scrollToBottom();
+    appendMessage({ ...payload, id: 'tmp_'+now, sender_id: currentUser.id,
+      nickname: currentUser.nickname, username: currentUser.username,
+      avatar: currentUser.avatar, created_at: now });
+    scrollBottom();
+    socket.emit('dm_message', { toUserId: currentDMUser, ...payload });
   }
 
   input.value = '';
   input.style.height = 'auto';
   document.getElementById('char-count').textContent = '';
-
-  // Stop typing
+  removeAttachment();
   clearTimeout(typingTimeout);
-  const room = currentRoom === 'global' ? 'global' : [currentUser.id, currentDMUser].sort().join('_');
-  socket.emit('typing', { room, isTyping: false });
+  socket.emit('typing', {
+    room: currentRoom === 'global' ? 'global' : [currentUser.id, currentDMUser].sort().join('_'),
+    isTyping: false
+  });
 }
 
-// Room switching
-function switchRoom(room) {
-  currentRoom = 'global';
-  currentDMUser = null;
-  lastMsgDate = null;
-  typingUsers = {};
-  updateTypingIndicator();
+// ── Attachment ────────────────────────────────────────────────────────────────
+async function handleFileSelect(input) {
+  const file = input.files[0]; if (!file) return;
+  input.value = '';
 
-  // Update nav
+  const fd = new FormData();
+  fd.append('file', file);
+  showToast('⏳ Загрузка...', 'info');
+  const res = await apiForm('/api/upload', fd);
+  if (res?.url) {
+    pendingAttachment = { url: res.url, type: res.type, name: file.name };
+    document.getElementById('attach-preview-img').src = res.url;
+    document.getElementById('attach-preview-name').textContent = file.name;
+    document.getElementById('attach-preview').style.display = 'flex';
+    showToast('✅ Файл готов', 'success');
+  } else {
+    showToast('❌ Ошибка загрузки', 'error');
+  }
+}
+function removeAttachment() {
+  pendingAttachment = null;
+  document.getElementById('attach-preview').style.display = 'none';
+  document.getElementById('attach-preview-img').src = '';
+}
+
+// ── Lightbox ──────────────────────────────────────────────────────────────────
+function openLightbox(src) {
+  document.getElementById('lightbox-img').src = src;
+  document.getElementById('lightbox').classList.add('open');
+}
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('open');
+}
+
+// ── Room switching ─────────────────────────────────────────────────────────────
+async function switchRoom(room) {
+  currentRoom = 'global'; currentDMUser = null;
+  lastMsgSenderId = null; lastMsgDate = null;
+  typingUsers = {}; updateTypingIndicator();
+
   document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
   document.querySelector('[data-room="global"]').classList.add('active');
   document.querySelectorAll('.user-item').forEach(i => i.classList.remove('active-dm'));
-
-  document.getElementById('header-avatar').textContent = '🌐';
   document.getElementById('header-avatar').innerHTML = '🌐';
   document.getElementById('header-name').textContent = 'Мировой чат';
   document.getElementById('header-sub').textContent = 'Глобальный канал';
   document.getElementById('view-profile-btn').style.display = 'none';
-  document.getElementById('msg-input').placeholder = 'Напиши что-нибудь...';
+  document.getElementById('msg-input').placeholder = 'Написать сообщение...';
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('visible');
 
   clearMessages();
-  loadGlobalMessages();
+  await loadGlobalMessages();
 }
 
 async function openDM(userId) {
-  currentRoom = 'dm_' + userId;
-  currentDMUser = userId;
-  lastMsgDate = null;
-  typingUsers = {};
-  updateTypingIndicator();
+  currentRoom = 'dm_'+userId; currentDMUser = userId;
+  lastMsgSenderId = null; lastMsgDate = null;
+  typingUsers = {}; updateTypingIndicator();
 
-  // Clear unread
-  if (unreadCounts[userId]) {
-    delete unreadCounts[userId];
-    renderUsersList(Object.values(allUsers));
-  }
+  delete unreadCounts[userId];
+  renderUsers(Object.values(allUsers));
 
-  // Update nav
   document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.user-item').forEach(i => i.classList.remove('active-dm'));
   const item = document.querySelector(`.user-item[data-user-id="${userId}"]`);
   if (item) item.classList.add('active-dm');
 
-  const user = allUsers[userId];
-  const headerAv = document.getElementById('chat-header-avatar') || document.getElementById('header-avatar');
-  if (user?.avatar) {
-    document.getElementById('header-avatar').innerHTML = `<img src="${user.avatar}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
-  } else {
-    document.getElementById('header-avatar').textContent = user?.nickname?.[0]?.toUpperCase() || '?';
-  }
-  document.getElementById('header-name').textContent = user?.nickname || 'DM';
-  document.getElementById('header-sub').textContent = '@' + (user?.username || '');
+  const u = allUsers[userId] || {};
+  const hav = document.getElementById('header-avatar');
+  if (u.avatar) hav.innerHTML = `<img src="${u.avatar}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+  else hav.textContent = u.nickname?.[0]?.toUpperCase() || '?';
+  document.getElementById('header-name').textContent = u.nickname || 'DM';
+  document.getElementById('header-sub').textContent = u.status==='online' ? '● Онлайн' : 'был '+formatLastSeen(u.last_seen);
   document.getElementById('view-profile-btn').style.display = 'flex';
-  document.getElementById('msg-input').placeholder = `Написать ${user?.nickname || ''}...`;
-
-  // Close sidebar on mobile
+  document.getElementById('msg-input').placeholder = `Написать ${u.nickname || ''}...`;
   document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('visible');
 
   clearMessages();
   await loadDMMessages(userId);
 }
 
-// Sidebar mobile
+// ── Sidebar mobile ────────────────────────────────────────────────────────────
 function toggleSidebar() {
-  document.getElementById('sidebar').classList.toggle('open');
+  const sb = document.getElementById('sidebar');
+  const ov = document.getElementById('sidebar-overlay');
+  sb.classList.toggle('open');
+  ov.classList.toggle('visible', sb.classList.contains('open'));
 }
 
-// Profile modal
-function openMyProfile() {
-  isMyProfile = true;
-  const u = currentUser;
-  fillProfileModal(u, true);
-  document.getElementById('profile-modal').classList.add('open');
-}
-
+// ── Profile modal ─────────────────────────────────────────────────────────────
+function openMyProfile() { showProfile(currentUser, true); }
+function viewCurrentProfile() { if (currentDMUser) viewUser(currentDMUser); }
 function viewUser(userId) {
   if (userId === currentUser.id) { openMyProfile(); return; }
-  apiFetch(`/api/users/${userId}`).then(u => {
-    if (!u) return;
-    isMyProfile = false;
-    fillProfileModal(u, false);
-    document.getElementById('profile-modal').classList.add('open');
-    document.getElementById('dm-btn').dataset.userId = userId;
-  });
+  api(`/api/users/${userId}`).then(u => { if (u) showProfile(u, false); });
 }
 
-function viewCurrentProfile() {
-  if (currentDMUser) viewUser(currentDMUser);
-}
-
-function fillProfileModal(u, isOwn) {
+function showProfile(u, isOwn) {
   document.getElementById('modal-nickname').textContent = u.nickname;
   document.getElementById('modal-nickname').contentEditable = 'false';
   document.getElementById('modal-username').textContent = '@' + u.username;
   document.getElementById('modal-bio').value = u.bio || '';
   document.getElementById('modal-bio').readOnly = true;
 
-  const avatarEl = document.getElementById('modal-avatar');
+  const avEl = document.getElementById('modal-avatar');
   const initEl = document.getElementById('modal-avatar-initial');
   const imgEl = document.getElementById('modal-avatar-img');
   if (u.avatar) {
-    imgEl.src = u.avatar;
-    imgEl.style.display = 'block';
-    initEl.style.display = 'none';
+    imgEl.src = u.avatar; imgEl.style.display = 'block'; initEl.style.display = 'none';
   } else {
-    initEl.textContent = u.nickname[0].toUpperCase();
-    initEl.style.display = 'block';
-    imgEl.style.display = 'none';
+    initEl.textContent = u.nickname?.[0]?.toUpperCase() || '?';
+    initEl.style.display = 'block'; imgEl.style.display = 'none';
   }
 
-  // Edit button visibility
+  const statusBadge = document.getElementById('modal-status-badge');
+  const online = u.status === 'online';
+  statusBadge.textContent = online ? '● Онлайн' : '● был ' + formatLastSeen(u.last_seen);
+  statusBadge.className = 'status-badge ' + (online ? 'is-online' : 'is-offline');
+
   document.getElementById('avatar-edit-btn').classList.toggle('visible', isOwn);
   document.getElementById('edit-profile-btn').style.display = isOwn ? '' : 'none';
   document.getElementById('save-profile-btn').style.display = 'none';
   document.getElementById('dm-btn').style.display = isOwn ? 'none' : '';
-  const logoutBtn = document.querySelector('.btn-logout');
-  if (logoutBtn) logoutBtn.style.display = isOwn ? '' : 'none';
+  document.getElementById('dm-btn').dataset.userId = u.id;
+  document.getElementById('logout-btn').style.display = isOwn ? '' : 'none';
 
-  // Status
-  const statusBadge = document.querySelector('.status-badge');
-  if (!isOwn) {
-    statusBadge.style.display = '';
-    const online = u.status === 'online';
-    statusBadge.textContent = online ? '● Online' : '● Offline';
-    statusBadge.style.color = online ? 'var(--green)' : 'var(--muted)';
-  } else {
-    statusBadge.style.display = '';
-    statusBadge.textContent = '● Online';
-    statusBadge.style.color = 'var(--green)';
+  // Stats - joined date
+  if (u.created_at) {
+    const d = new Date(u.created_at * 1000);
+    document.getElementById('stat-joined').textContent = d.toLocaleDateString('ru-RU', { month:'short', year:'numeric' });
   }
+
+  document.getElementById('profile-modal').classList.add('open');
 }
 
 function toggleEditProfile() {
   const nickEl = document.getElementById('modal-nickname');
   const bioEl = document.getElementById('modal-bio');
-  const editBtn = document.getElementById('edit-profile-btn');
-  const saveBtn = document.getElementById('save-profile-btn');
-
   const editing = nickEl.contentEditable !== 'true';
   nickEl.contentEditable = editing ? 'true' : 'false';
   bioEl.readOnly = !editing;
-  editBtn.style.display = editing ? 'none' : '';
-  saveBtn.style.display = editing ? '' : 'none';
-  if (editing) { nickEl.focus(); }
+  document.getElementById('edit-profile-btn').style.display = editing ? 'none' : '';
+  document.getElementById('save-profile-btn').style.display = editing ? '' : 'none';
+  if (editing) nickEl.focus();
 }
 
 async function saveProfile() {
   const nickname = document.getElementById('modal-nickname').textContent.trim();
   const bio = document.getElementById('modal-bio').value.trim();
   if (!nickname) return;
-
-  const updated = await apiFetch('/api/me', {
-    method: 'PUT',
-    body: JSON.stringify({ nickname, bio })
-  });
+  const updated = await api('/api/me', { method:'PUT', body: JSON.stringify({ nickname, bio }) });
   if (updated) {
     currentUser = { ...currentUser, nickname: updated.nickname, bio: updated.bio };
     localStorage.setItem('user', JSON.stringify(currentUser));
     updateMySidebar();
     toggleEditProfile();
-    showToast('✅ Профиль обновлён!', 'success');
+    showToast('✅ Профиль обновлён', 'success');
   }
 }
 
 async function uploadAvatar(input) {
-  const file = input.files[0];
-  if (!file) return;
-  const fd = new FormData();
-  fd.append('avatar', file);
-  const res = await apiFetchForm('/api/me/avatar', fd);
+  const file = input.files[0]; if (!file) return;
+  const fd = new FormData(); fd.append('avatar', file);
+  const res = await apiForm('/api/me/avatar', fd);
   if (res?.avatar) {
     currentUser.avatar = res.avatar;
     localStorage.setItem('user', JSON.stringify(currentUser));
     updateMySidebar();
-    // Update modal
     const imgEl = document.getElementById('modal-avatar-img');
     const initEl = document.getElementById('modal-avatar-initial');
-    imgEl.src = res.avatar;
-    imgEl.style.display = 'block';
-    initEl.style.display = 'none';
-    showToast('🖼 Аватар обновлён!', 'success');
+    imgEl.src = res.avatar; imgEl.style.display = 'block'; initEl.style.display = 'none';
+    showToast('🖼 Аватар обновлён', 'success');
   }
   input.value = '';
 }
@@ -502,43 +519,36 @@ function startDM() {
   openDM(userId);
 }
 
-function closeModal(id) {
-  document.getElementById(id).classList.remove('open');
-}
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
 function logout() {
-  localStorage.removeItem('token');
-  localStorage.removeItem('user');
+  localStorage.removeItem('token'); localStorage.removeItem('user');
   if (socket) socket.disconnect();
   window.location.href = '/';
 }
 
-// Toast notifications
+// ── Toast ─────────────────────────────────────────────────────────────────────
 function showToast(text, type = 'info') {
-  const container = document.getElementById('toast-container');
-  const toast = document.createElement('div');
-  toast.className = `toast ${type}`;
-  toast.textContent = text;
-  container.appendChild(toast);
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`; t.textContent = text;
+  c.appendChild(t);
   setTimeout(() => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateX(20px)';
-    toast.style.transition = 'all 0.3s';
-    setTimeout(() => toast.remove(), 300);
-  }, 3500);
+    t.style.cssText += 'opacity:0;transform:translateX(14px);transition:all 0.3s;';
+    setTimeout(() => t.remove(), 320);
+  }, 3200);
 }
 
-// Close modal on overlay click
+function escHtml(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.appendChild(document.createTextNode(s));
+  return d.innerHTML;
+}
+
+// Click outside modal
 document.getElementById('profile-modal').addEventListener('click', function(e) {
   if (e.target === this) closeModal('profile-modal');
 });
 
-// XSS protection
-function escHtml(str) {
-  const d = document.createElement('div');
-  d.appendChild(document.createTextNode(str));
-  return d.innerHTML;
-}
-
-// Start
 init();
