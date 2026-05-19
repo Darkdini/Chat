@@ -56,8 +56,8 @@ body {
   gap: 8px;
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 700;
-  font-size: 18px;
-  letter-spacing: 4px;
+  font-size: 13px;
+  letter-spacing: 2px;
   background: linear-gradient(135deg, var(--purple), var(--cyan));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;

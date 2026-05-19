@@ -1,5 +1,5 @@
 {
-  "name": "nexus-chat",
+  "name": "ermentorna",
   "version": "1.0.0",
   "description": "Stylish real-time chat app",
   "main": "server.js",
@@ -9,7 +9,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "socket.io": "^4.7.2",
-    "node-sqlite3-wasm": "^0.8.12",
+    "sql.js": "^1.12.0",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.1",
