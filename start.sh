@@ -22,9 +22,9 @@ if [ ! -d "node_modules" ]; then
   npm install
   if [ $? -ne 0 ]; then
     echo ""
-    echo "❌ Ошибка npm install."
-    echo "   На Termux попробуй: pkg install make python"
-    echo "   Затем снова: bash start.sh"
+    echo "❌ Ошибка npm install. Попробуй:"
+    echo "   rm -rf node_modules package-lock.json"
+    echo "   bash start.sh"
     exit 1
   fi
 fi
