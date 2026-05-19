@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NEXUS — Chat</title>
+  <link rel="stylesheet" href="/css/auth.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <canvas id="bg-canvas"></canvas>
+
+  <div class="auth-container">
+    <div class="auth-card" id="auth-card">
+      <!-- Logo -->
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 40 40" fill="none">
+            <polygon points="20,2 38,11 38,29 20,38 2,29 2,11" stroke="url(#g1)" stroke-width="2" fill="none"/>
+            <circle cx="20" cy="20" r="6" fill="url(#g1)"/>
+            <defs>
+              <linearGradient id="g1" x1="0" y1="0" x2="40" y2="40">
+                <stop offset="0%" stop-color="#a855f7"/>
+                <stop offset="100%" stop-color="#06b6d4"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <span class="logo-text">NEXUS</span>
+      </div>
+
+      <!-- Tabs -->
+      <div class="auth-tabs">
+        <button class="tab-btn active" data-tab="login">Войти</button>
+        <button class="tab-btn" data-tab="register">Регистрация</button>
+        <div class="tab-indicator"></div>
+      </div>
+
+      <!-- Login Form -->
+      <form id="login-form" class="auth-form active">
+        <div class="field-group">
+          <div class="input-wrap">
+            <span class="input-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z"/></svg>
+            </span>
+            <input type="text" id="login-username" placeholder="Логин" autocomplete="username" required>
+          </div>
+          <div class="input-wrap">
+            <span class="input-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z"/></svg>
+            </span>
+            <input type="password" id="login-password" placeholder="Пароль" autocomplete="current-password" required>
+            <button type="button" class="eye-btn" onclick="togglePwd(this)">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z"/><path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="error-msg" id="login-error"></div>
+        <button type="submit" class="btn-primary">
+          <span>Войти</span>
+          <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 3a1 1 0 011 1v12a1 1 0 11-2 0V4a1 1 0 011-1zm7.707 3.293a1 1 0 010 1.414L9.414 9H17a1 1 0 110 2H9.414l1.293 1.293a1 1 0 01-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0z"/></svg>
+        </button>
+      </form>
+
+      <!-- Register Form -->
+      <form id="register-form" class="auth-form">
+        <div class="field-group">
+          <div class="input-wrap">
+            <span class="input-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z"/></svg>
+            </span>
+            <input type="text" id="reg-username" placeholder="Логин (мин. 3 символа)" required>
+          </div>
+          <div class="input-wrap">
+            <span class="input-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"/></svg>
+            </span>
+            <input type="text" id="reg-nickname" placeholder="Никнейм (как тебя видят)" required>
+          </div>
+          <div class="input-wrap">
+            <span class="input-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z"/></svg>
+            </span>
+            <input type="password" id="reg-password" placeholder="Пароль (мин. 6 символов)" required>
+            <button type="button" class="eye-btn" onclick="togglePwd(this)">
+              <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z"/><path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="error-msg" id="reg-error"></div>
+        <button type="submit" class="btn-primary">
+          <span>Создать аккаунт</span>
+          <svg viewBox="0 0 20 20" fill="currentColor"><path d="M8 9a3 3 0 100-6 3 3 0 000 6zM8 11a6 6 0 016 6H2a6 6 0 016-6zM16 7a1 1 0 10-2 0v1h-1a1 1 0 100 2h1v1a1 1 0 102 0v-1h1a1 1 0 100-2h-1V7z"/></svg>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/js/auth.js"></script>
+</body>
+</html>

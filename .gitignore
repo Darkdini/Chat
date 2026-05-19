@@ -1,0 +1,8 @@
+node_modules/
+chat.db
+uploads/*.jpg
+uploads/*.jpeg
+uploads/*.png
+uploads/*.gif
+uploads/*.webp
+.env
